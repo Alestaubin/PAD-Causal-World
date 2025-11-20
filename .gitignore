@@ -1,0 +1,4 @@
+__pycache__/
+src/CausalWorld/
+*DS_Store
+*.pyc
