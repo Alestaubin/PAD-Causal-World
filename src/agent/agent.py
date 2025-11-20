@@ -7,7 +7,13 @@ import utils
 from agent.encoder import make_encoder
 
 LOG_FREQ = 10000
+import logging
 
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(funcName)s - %(message)s'
+)
 
 def make_agent(obs_shape, device, action_shape, args):
     return SacSSAgent(
@@ -536,18 +542,20 @@ class SacSSAgent(object):
         return curl_loss.item()
 
     def update(self, replay_buffer, L, step):
+        # print("sampling from replay buffer")
         if self.use_curl:
             obs, action, reward, next_obs, not_done, curl_kwargs = replay_buffer.sample_curl()
         else:
             obs, action, reward, next_obs, not_done = replay_buffer.sample()
         
+        # print("updating critic")
         L.log('train/batch_reward', reward.mean(), step)
 
         self.update_critic(obs, action, reward, next_obs, not_done, L, step)
-
+        # print("updating actor and alpha")
         if step % self.actor_update_freq == 0:
             self.update_actor_and_alpha(obs, L, step)
-
+        # print("updating critic target networks")
         if step % self.critic_target_update_freq == 0:
             utils.soft_update_params(
                 self.critic.Q1, self.critic_target.Q1, self.critic_tau
@@ -559,13 +567,13 @@ class SacSSAgent(object):
                 self.critic.encoder, self.critic_target.encoder,
                 self.encoder_tau
             )
-        
+        # print("updating self-supervised tasks")
         if self.rot is not None and step % self.ss_update_freq == 0:
             self.update_rot(obs, L, step)
-
+        # print("updating inverse model")
         if self.inv is not None and step % self.ss_update_freq == 0:
             self.update_inv(obs, next_obs, action, L, step)
-
+        # print("updating CURL")
         if self.curl is not None and step % self.ss_update_freq == 0:
             obs_anchor, obs_pos = curl_kwargs["obs_anchor"], curl_kwargs["obs_pos"]
             self.update_curl(obs_anchor, obs_pos, L, step)

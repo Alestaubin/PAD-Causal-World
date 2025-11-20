@@ -44,8 +44,8 @@ def make_dir(dir_path):
 
 
 class ReplayBuffer(object):
-    """Buffer to store environment transitions"""
-    def __init__(self, device, obs_shape, action_shape, capacity, batch_size):
+	"""Buffer to store environment transitions"""
+	def __init__(self, device, obs_shape, action_shape, capacity, batch_size):
 		self.capacity = capacity
 		self.batch_size = batch_size
 
@@ -62,53 +62,53 @@ class ReplayBuffer(object):
 		self.full = False
 		self.device = device
 
-    def add(self, obs, action, reward, next_obs, done):
-        np.copyto(self.obses[self.idx], obs)
-        np.copyto(self.actions[self.idx], action)
-        np.copyto(self.rewards[self.idx], reward)
-        np.copyto(self.next_obses[self.idx], next_obs)
-        np.copyto(self.not_dones[self.idx], not done)
+	def add(self, obs, action, reward, next_obs, done):
+		np.copyto(self.obses[self.idx], obs)
+		np.copyto(self.actions[self.idx], action)
+		np.copyto(self.rewards[self.idx], reward)
+		np.copyto(self.next_obses[self.idx], next_obs)
+		np.copyto(self.not_dones[self.idx], not done)
 
-        self.idx = (self.idx + 1) % self.capacity
-        self.full = self.full or self.idx == 0
+		self.idx = (self.idx + 1) % self.capacity
+		self.full = self.full or self.idx == 0
 
-    def sample(self):
-        idxs = np.random.randint(
-            0, self.capacity if self.full else self.idx, size=self.batch_size
-        )
+	def sample(self):
+		idxs = np.random.randint(
+			0, self.capacity if self.full else self.idx, size=self.batch_size
+		)
 
-        obses = torch.as_tensor(self.obses[idxs]).float().to(self.device)
-        actions = torch.as_tensor(self.actions[idxs]).to(self.device)
-        rewards = torch.as_tensor(self.rewards[idxs]).to(self.device)
-        next_obses = torch.as_tensor(self.next_obses[idxs]).float().to(self.device)
-        not_dones = torch.as_tensor(self.not_dones[idxs]).to(self.device)
+		obses = torch.as_tensor(self.obses[idxs]).float().to(self.device)
+		actions = torch.as_tensor(self.actions[idxs]).to(self.device)
+		rewards = torch.as_tensor(self.rewards[idxs]).to(self.device)
+		next_obses = torch.as_tensor(self.next_obses[idxs]).float().to(self.device)
+		not_dones = torch.as_tensor(self.not_dones[idxs]).to(self.device)
 
-        obses = random_crop(obses)
-        next_obses = random_crop(next_obses)
+		obses = random_crop(obses)
+		next_obses = random_crop(next_obses)
 
-        return obses, actions, rewards, next_obses, not_dones
+		return obses, actions, rewards, next_obses, not_dones
 
-    def sample_curl(self):
-        idxs = np.random.randint(
-            0, self.capacity if self.full else self.idx, size=self.batch_size
-        )
+	def sample_curl(self):
+		idxs = np.random.randint(
+			0, self.capacity if self.full else self.idx, size=self.batch_size
+		)
 
-        obses = torch.as_tensor(self.obses[idxs]).float().to(self.device)
-        actions = torch.as_tensor(self.actions[idxs]).to(self.device)
-        rewards = torch.as_tensor(self.rewards[idxs]).to(self.device)
-        next_obses = torch.as_tensor(self.next_obses[idxs]).float().to(self.device)
-        not_dones = torch.as_tensor(self.not_dones[idxs]).to(self.device)
+		obses = torch.as_tensor(self.obses[idxs]).float().to(self.device)
+		actions = torch.as_tensor(self.actions[idxs]).to(self.device)
+		rewards = torch.as_tensor(self.rewards[idxs]).to(self.device)
+		next_obses = torch.as_tensor(self.next_obses[idxs]).float().to(self.device)
+		not_dones = torch.as_tensor(self.not_dones[idxs]).to(self.device)
 
-        pos = obses.clone()
+		pos = obses.clone()
 
-        obses = random_crop(obses)
-        next_obses = random_crop(next_obses)
-        pos = random_crop(pos)
-        
-        curl_kwargs = dict(obs_anchor=obses, obs_pos=pos,
-                          time_anchor=None, time_pos=None)
+		obses = random_crop(obses)
+		next_obses = random_crop(next_obses)
+		pos = random_crop(pos)
+		
+		curl_kwargs = dict(obs_anchor=obses, obs_pos=pos,
+							time_anchor=None, time_pos=None)
 
-        return obses, actions, rewards, next_obses, not_dones, curl_kwargs
+		return obses, actions, rewards, next_obses, not_dones, curl_kwargs
 
 
 def get_curl_pos_neg(obs, replay_buffer):
@@ -163,8 +163,8 @@ def rotate(x):
 
 def random_crop_cuda(x, size=84, w1=None, h1=None, return_w1_h1=False):
 	"""Vectorized CUDA implementation of random crop"""
-	assert isinstance(x, torch.Tensor) and x.is_cuda, \
-		'input must be CUDA tensor'
+	# assert isinstance(x, torch.Tensor) and x.is_cuda, \
+	# 	'input must be CUDA tensor'
 	
 	n = x.shape[0]
 	img_size = x.shape[-1]
@@ -178,10 +178,12 @@ def random_crop_cuda(x, size=84, w1=None, h1=None, return_w1_h1=False):
 	x = x.permute(0, 2, 3, 1)
 
 	if w1 is None:
-		w1 = torch.LongTensor(n).random_(0, crop_max)
-		h1 = torch.LongTensor(n).random_(0, crop_max)
-
-	windows = view_as_windows_cuda(x, (1, size, size, 1))[..., 0,:,:, 0]
+		# w1 = torch.LongTensor(n).random_(0, crop_max)
+		# h1 = torch.LongTensor(n).random_(0, crop_max)
+		w1 = torch.randint(0, crop_max, (n,), device=x.device).long()
+		h1 = torch.randint(0, crop_max, (n,), device=x.device).long()
+	
+	windows = view_as_windows(x, (1, size, size, 1))[..., 0,:,:, 0]
 	cropped = windows[torch.arange(n), w1, h1]
 
 	if return_w1_h1:
@@ -190,7 +192,7 @@ def random_crop_cuda(x, size=84, w1=None, h1=None, return_w1_h1=False):
 	return cropped
 
 
-def view_as_windows_cuda(x, window_shape):
+def view_as_windows(x, window_shape):
 	"""PyTorch CUDA-enabled implementation of view_as_windows"""
 	assert isinstance(window_shape, tuple) and len(window_shape) == len(x.shape), \
 		'window_shape must be a tuple with same number of dimensions as x'
@@ -200,7 +202,7 @@ def view_as_windows_cuda(x, window_shape):
 		x.size(0),
 		x.size(1)-int(window_shape[1]),
 		x.size(2)-int(window_shape[2]),
-		x.size(3)    
+		x.size(3)
 	]
 
 	new_shape = tuple(list(win_indices_shape) + list(window_shape))
@@ -216,7 +218,7 @@ def random_crop(imgs, size=84, w1=None, h1=None, return_w1_h1=False):
 
 	is_tensor = isinstance(imgs, torch.Tensor)
 	if is_tensor:
-		assert imgs.is_cuda, 'input images are tensors but not cuda!'
+		#assert imgs.is_cuda, 'input images are tensors but not cuda!'
 		return random_crop_cuda(imgs, size=size, w1=w1, h1=h1, return_w1_h1=return_w1_h1)
 		
 	n = imgs.shape[0]

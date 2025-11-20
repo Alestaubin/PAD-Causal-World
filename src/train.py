@@ -10,7 +10,13 @@ import time
 from logger import Logger
 from video import VideoRecorder
 from tqdm import tqdm
+import logging
 
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(funcName)s - %(message)s'
+)
 def evaluate(env, agent, video, num_episodes, L, step):
 	"""Evaluate agent"""
 	for i in range(num_episodes):
@@ -59,10 +65,12 @@ def main(args):
 	model_dir = utils.make_dir(os.path.join(args.work_dir, 'model'))
 	video_dir = utils.make_dir(os.path.join(args.work_dir, 'video'))
 	video = VideoRecorder(video_dir if args.save_video else None)
-
+	device = torch.device("mps")#("mps" if torch.backends.mps.is_available() else "cpu")
+	print("Using device:", device)
 	# Prepare agent
 	#assert torch.cuda.is_available(), 'must have cuda enabled'
 	replay_buffer = utils.ReplayBuffer(
+		device=device,
 		obs_shape=env.observation_space.shape,
 		action_shape=env.action_space.shape,
 		capacity=args.train_steps,
@@ -70,7 +78,7 @@ def main(args):
 	)
 	cropped_obs_shape = (3*args.frame_stack, 84, 84)
 	agent = make_agent(
-		device=torch.device("mps" if torch.backends.mps.is_available() else "cpu"),
+		device=device,
 		obs_shape=cropped_obs_shape,
 		action_shape=env.action_space.shape,
 		args=args
@@ -79,7 +87,7 @@ def main(args):
 	L = Logger(args.work_dir, use_tb=False)
 	episode, episode_reward, done = 0, 0, True
 	start_time = time.time()
-	for step in tqdm(range(args.train_steps+1), desc="Training Progress"):
+	for step in range(args.train_steps+1):
 		if done:
 			if step > 0:
 				L.log('train/duration', time.time() - start_time, step)
@@ -117,9 +125,12 @@ def main(args):
 		# Run training update
 		if step >= args.init_steps:
 			num_updates = args.init_steps if step == args.init_steps else 1
-			for _ in range(num_updates):
+			if num_updates > 1:
+				for _ in tqdm(range(num_updates), desc="Updating agent"):
+					# print("updating agent")
+					agent.update(replay_buffer, L, step)
+			else:
 				agent.update(replay_buffer, L, step)
-
 		# Take step
 		next_obs, reward, done, _ = env.step(action)
 		# done_bool = 0 if episode_step + 1 == env._max_episode_steps else float(done)
