@@ -65,7 +65,6 @@ class CausalWorldFromPixels(gym.Wrapper):
         self._width = width
         
         # Define new observation space (Channel, Height, Width)
-        # Assuming RGB (3 channels)
         self.observation_space = gym.spaces.Box(
             low=0, high=255, shape=(3, height, width), dtype=np.uint8
         )
@@ -80,18 +79,22 @@ class CausalWorldFromPixels(gym.Wrapper):
 
     def _process_obs(self, obs):
         # 1. Get the image from the specific camera
-        # Note: Ensure your CausalWorld env is configured to return this camera
-        #print("Obs shape:", obs.shape)
         img = obs[0]
         
+        # If the image is float and normalized (0.0 to 1.0), scale it up
+        if img.dtype != np.uint8:
+            if img.max() <= 1.0:
+                img = img * 255.0
+            img = img.astype(np.uint8)
+        # --- MODIFICATION END ---
+
         # 2. Resize if necessary
         if img.shape[0] != self._height or img.shape[1] != self._width:
              img = cv2.resize(img, (self._width, self._height), interpolation=cv2.INTER_AREA)
 
-        # 3. Transpose from (H, W, C) -> (C, H, W) for PyTorch/PAD compatibility
+        # 3. Transpose from (H, W, C) -> (C, H, W)
         img = np.transpose(img, (2, 0, 1))
         return img
-
 
 class CausalDomainWrapper(gym.Wrapper):
     """
@@ -139,13 +142,13 @@ class FrameStack(gym.Wrapper):
         self._k = k
         self._frames = deque([], maxlen=k)
         shp = env.observation_space.shape
+        
         self.observation_space = gym.spaces.Box(
             low=0,
-            high=1,
+            high=255,  # CHANGED: was high=1, now high=255 for uint8
             shape=((shp[0] * k,) + shp[1:]),
-            dtype=env.observation_space.dtype
+            dtype=np.uint8 # Explicitly set to uint8
         )
-        # self._max_episode_steps = env._max_episode_steps
 
     def reset(self):
         obs = self.env.reset()

@@ -2,7 +2,7 @@ import torch
 import os
 
 from arguments import parse_args
-from env.wrappers import make_pad_env
+# from env.wrappers import make_pad_env
 # from env.CausalWorld_wrappers import make_pad_env_causalworld
 from agent.agent import make_agent
 import utils
@@ -11,6 +11,8 @@ from logger import Logger
 from video import VideoRecorder
 from tqdm import tqdm
 import logging
+import matplotlib.pyplot as plt
+import numpy as np
 
 # Configure logging
 logging.basicConfig(
@@ -41,6 +43,7 @@ def main(args):
 	utils.set_seed_everywhere(args.seed)
 	
 	if args.domain_name == 'causalworld':
+		from env.CausalWorld_wrappers import make_pad_env_causalworld
 		env = make_pad_env_causalworld(
 				task_name="pushing",
 				seed=42,
@@ -52,6 +55,7 @@ def main(args):
 				enable_visualization=False
 		)
 	else:
+		from env.wrappers import make_pad_env
 		env = make_pad_env(
 			domain_name=args.domain_name,
 			task_name=args.task_name,
@@ -114,14 +118,33 @@ def main(args):
 			episode += 1
 
 			L.log('train/episode', episode, step)
-
+		if step % 1000 == 0:
+			
+			# Get the last observation from the replay buffer
+			# Shape is likely (9, 100, 100) due to FrameStack=3 * RGB=3
+			debug_obs = replay_buffer.obses[replay_buffer.idx - 1]
+			
+			# Take just the first 3 channels (the most recent frame)
+			debug_img = debug_obs[:3, :, :]
+			
+			# Transpose from (C, H, W) back to (H, W, C) for Matplotlib
+			for i in range(3):
+				debug_img = np.transpose(debug_obs[i*3:(i+1)*3, :, :], (1, 2, 0))
+			
+				print(f"DEBUG: Obs Min: {debug_img.min()}, Max: {debug_img.max()}, Type: {debug_img.dtype}")
+				
+				plt.imshow(debug_img)
+				plt.savefig(f"debug_agent_view_{step}_{i}.png")
+				plt.close()
 		# Sample action for data collection
 		if step < args.init_steps:
 			action = env.action_space.sample()
 		else:
 			with utils.eval_mode(agent):
 				action = agent.sample_action(obs)
-
+		
+		# print("observation shape:", obs.shape)
+		# print("observation dtype:", obs.dtype)
 		# Run training update
 		if step >= args.init_steps:
 			num_updates = args.init_steps if step == args.init_steps else 1
@@ -138,7 +161,6 @@ def main(args):
 		replay_buffer.add(obs, action, reward, next_obs, done_bool)
 		episode_reward += reward
 		obs = next_obs
-
 		episode_step += 1
 
 
