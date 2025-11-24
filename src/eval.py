@@ -7,12 +7,11 @@ import utils
 from video import VideoRecorder
 
 from arguments import parse_args
-from env.wrappers import make_pad_env
 from agent.agent import make_agent
 from utils import get_curl_pos_neg
 
 
-def evaluate(env, agent, args, video, adapt=False):
+def evaluate(env, device, agent, args, video, adapt=False):
 	"""Evaluate an agent, optionally adapt using PAD"""
 	episode_rewards = []
 
@@ -41,13 +40,13 @@ def evaluate(env, agent, args, video, adapt=False):
 				action = ep_agent.select_action(obs)
 			next_obs, reward, done, _ = env.step(action)
 			episode_reward += reward
-			
+
 			# Make self-supervised update if flag is true
 			if adapt:
 				if args.use_rot: # rotation prediction
 
 					# Prepare batch of cropped observations
-					batch_next_obs = utils.batch_from_obs(torch.Tensor(next_obs).cuda(), batch_size=args.pad_batch_size)
+					batch_next_obs = utils.batch_from_obs(torch.Tensor(next_obs).to(device), batch_size=args.pad_batch_size)
 					batch_next_obs = utils.random_crop(batch_next_obs)
 
 					# Adapt using rotation prediction
@@ -56,12 +55,22 @@ def evaluate(env, agent, args, video, adapt=False):
 				if args.use_inv: # inverse dynamics model
 
 					# Prepare batch of observations
-					batch_obs = utils.batch_from_obs(torch.Tensor(obs).cuda(), batch_size=args.pad_batch_size)
-					batch_next_obs = utils.batch_from_obs(torch.Tensor(next_obs).cuda(), batch_size=args.pad_batch_size)
-					batch_action = torch.Tensor(action).cuda().unsqueeze(0).repeat(args.pad_batch_size, 1)
+					if args.obs_type == 'pixel':
+						batch_obs = utils.batch_from_obs(torch.Tensor(obs).to(device), batch_size=args.pad_batch_size)
+						batch_next_obs = utils.batch_from_obs(torch.Tensor(next_obs).to(device), batch_size=args.pad_batch_size)
+					else: # structured obs
+						batch_obs = utils.batch_from_obs_structured(torch.Tensor(obs).to(device), batch_size=args.pad_batch_size)
+						batch_next_obs = utils.batch_from_obs_structured(torch.Tensor(next_obs).to(device), batch_size=args.pad_batch_size)
+
+					batch_action = torch.Tensor(action).to(device).unsqueeze(0).repeat(args.pad_batch_size, 1)
 
 					# Adapt using inverse dynamics prediction
-					losses.append(ep_agent.update_inv(utils.random_crop(batch_obs), utils.random_crop(batch_next_obs), batch_action))
+					if args.obs_type == 'pixel':
+						# Crop if pixel observations
+						batch_obs = utils.random_crop(batch_obs)
+						batch_next_obs = utils.random_crop(batch_next_obs)
+
+					losses.append(ep_agent.update_inv(batch_obs, batch_next_obs, batch_action))
 
 				if args.use_curl: # CURL
 
@@ -87,14 +96,30 @@ def evaluate(env, agent, args, video, adapt=False):
 
 def init_env(args):
 		utils.set_seed_everywhere(args.seed)
-		return make_pad_env(
-			domain_name=args.domain_name,
-			task_name=args.task_name,
-			seed=args.seed,
-			episode_length=args.episode_length,
-			action_repeat=args.action_repeat,
-			mode=args.mode
-		)
+		if args.domain_name == 'causalworld':
+			from env.CausalWorld_wrappers import make_pad_env_causalworld
+			env = make_pad_env_causalworld(
+					task_name=args.task_name,
+					seed=args.seed,
+					episode_length=args.episode_length,
+					frame_stack=args.frame_stack,
+					action_repeat=args.action_repeat,
+					mode=args.mode,
+					camera_index=[0], 
+					enable_visualization=False,
+					obs_type=args.obs_type # structured or pixel 
+			)
+		else:
+			from env.wrappers import make_pad_env
+			env = make_pad_env(
+				domain_name=args.domain_name,
+				task_name=args.task_name,
+				seed=args.seed,
+				episode_length=args.episode_length,
+				action_repeat=args.action_repeat,
+				mode=args.mode
+			)
+		return env
 
 
 def main(args):
@@ -103,12 +128,18 @@ def main(args):
 	model_dir = utils.make_dir(os.path.join(args.work_dir, 'model'))
 	video_dir = utils.make_dir(os.path.join(args.work_dir, 'video'))
 	video = VideoRecorder(video_dir if args.save_video else None, height=448, width=448)
-
+	device = torch.device("mps")#("mps" if torch.backends.mps.is_available() else "cpu")
+	print("Using device:", device)
 	# Prepare agent
-	assert torch.cuda.is_available(), 'must have cuda enabled'
-	cropped_obs_shape = (3*args.frame_stack, 84, 84)
+	# assert torch.cuda.is_available(), 'must have cuda enabled'
+	if args.obs_type == 'pixel':
+		obs_shape = (3*args.frame_stack, 84, 84) # cropped pixel obs
+	else:
+		obs_shape = env.observation_space.shape
 	agent = make_agent(
-		obs_shape=cropped_obs_shape,
+		obs_type=args.obs_type,
+		obs_shape=obs_shape,
+		device=device,
 		action_shape=env.action_space.shape,
 		args=args
 	)
@@ -116,7 +147,7 @@ def main(args):
 
 	# Evaluate agent without PAD
 	print(f'Evaluating {args.work_dir} for {args.pad_num_episodes} episodes (mode: {args.mode})')
-	eval_reward = evaluate(env, agent, args, video)
+	eval_reward = evaluate(env, device, agent, args, video)
 	print('eval reward:', int(eval_reward))
 
 	# Evaluate agent with PAD (if applicable)
@@ -124,7 +155,7 @@ def main(args):
 	if args.use_inv or args.use_curl or args.use_rot:
 		env = init_env(args)
 		print(f'Policy Adaptation during Deployment of {args.work_dir} for {args.pad_num_episodes} episodes (mode: {args.mode})')
-		pad_reward = evaluate(env, agent, args, video, adapt=True)
+		pad_reward = evaluate(env, device, agent, args, video, adapt=True)
 		print('pad reward:', int(pad_reward))
 
 	# Save results

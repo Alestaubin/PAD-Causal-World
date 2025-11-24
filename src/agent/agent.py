@@ -15,8 +15,9 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(funcName)s - %(message)s'
 )
 
-def make_agent(obs_shape, device, action_shape, args):
+def make_agent(obs_type, obs_shape, device, action_shape, args):
     return SacSSAgent(
+        obs_type=obs_type,
         obs_shape=obs_shape,
         device=device,
         action_shape=action_shape,
@@ -87,13 +88,13 @@ def weight_init(m):
 class Actor(nn.Module):
     """MLP actor network."""
     def __init__(
-        self, obs_shape, action_shape, hidden_dim,
+        self, obs_type, obs_shape, action_shape, hidden_dim,
         encoder_feature_dim, log_std_min, log_std_max, num_layers, num_filters, num_shared_layers
     ):
         super().__init__()
 
         self.encoder = make_encoder(
-            obs_shape, encoder_feature_dim, num_layers,
+            obs_type, obs_shape, encoder_feature_dim, num_layers,
             num_filters, num_shared_layers
         )
 
@@ -218,13 +219,13 @@ class CURL(nn.Module):
 class Critic(nn.Module):
     """Critic network, employes two q-functions."""
     def __init__(
-        self, obs_shape, action_shape, hidden_dim,
+        self, obs_type, obs_shape, action_shape, hidden_dim,
         encoder_feature_dim, num_layers, num_filters, num_shared_layers
     ):
         super().__init__()
 
         self.encoder = make_encoder(
-            obs_shape, encoder_feature_dim, num_layers,
+            obs_type, obs_shape, encoder_feature_dim, num_layers,
             num_filters, num_shared_layers
         )
 
@@ -254,6 +255,7 @@ class SacSSAgent(object):
     def __init__(
         self,
         device,
+        obs_type,
         obs_shape,
         action_shape,
         hidden_dim=256,
@@ -298,24 +300,25 @@ class SacSSAgent(object):
         assert num_layers >= num_shared_layers, 'num shared layers cannot exceed total amount'
 
         self.actor = Actor(
-            obs_shape, action_shape, hidden_dim,
+            obs_type, obs_shape, action_shape, hidden_dim,
             encoder_feature_dim, actor_log_std_min, actor_log_std_max,
             num_layers, num_filters, num_layers
         ).to(self.device)
 
         self.critic = Critic(
-            obs_shape, action_shape, hidden_dim,
+            obs_type, obs_shape, action_shape, hidden_dim,
             encoder_feature_dim, num_layers, num_filters, num_layers
         ).to(self.device)
 
         self.critic_target = Critic(
-            obs_shape, action_shape, hidden_dim,
+            obs_type, obs_shape, action_shape, hidden_dim,
             encoder_feature_dim, num_layers, num_filters, num_layers
         ).to(self.device)
 
         self.critic_target.load_state_dict(self.critic.state_dict())
 
         # tie encoders between actor and critic
+        print("Copying weights from critic to actor")
         self.actor.encoder.copy_conv_weights_from(self.critic.encoder)
 
         self.log_alpha = torch.tensor(np.log(init_temperature), dtype=torch.float32).to(self.device)
@@ -331,10 +334,13 @@ class SacSSAgent(object):
 
         if use_rot or use_inv:
             self.ss_encoder = make_encoder(
-                obs_shape, encoder_feature_dim, num_layers,
+                obs_type, obs_shape, encoder_feature_dim, num_layers,
                 num_filters, num_shared_layers
             ).to(self.device)
-            self.ss_encoder.copy_conv_weights_from(self.critic.encoder, num_shared_layers)
+            print("Copying weights from critic to inverse self-supervised encoder")
+            print(f"Number of shared layers: {num_shared_layers}")
+            print("Total number of layers:", num_layers)
+            self.ss_encoder.copy_conv_weights_from(self.critic.encoder, n=num_shared_layers)
             
             # rotation
             if use_rot:
@@ -494,7 +500,7 @@ class SacSSAgent(object):
         return rot_loss.item()
 
     def update_inv(self, obs, next_obs, action, L=None, step=None):
-        assert obs.shape[-1] == 84 and next_obs.shape[-1] == 84
+        # assert obs.shape[-1] == 84 and next_obs.shape[-1] == 84
 
         h = self.ss_encoder(obs)
         h_next = self.ss_encoder(next_obs)

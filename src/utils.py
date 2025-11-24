@@ -126,6 +126,11 @@ def get_curl_pos_neg(obs, replay_buffer):
 
 	return obs, obs_pos
 
+def batch_from_obs_structured(obs, batch_size=32):
+	"""Converts a single structured obs to a batch of given size (the same obs repeated)"""
+	if isinstance(obs, torch.Tensor):
+		return obs.repeat(batch_size, 1)
+	return np.repeat(obs, repeats=batch_size, axis=0)
 
 def batch_from_obs(obs, batch_size=32):
 	"""Converts a pixel obs (C,H,W) to a batch (B,C,H,W) of given size"""

@@ -12,6 +12,7 @@ def parse_args():
 	parser.add_argument('--action_repeat', default=4, type=int)
 	parser.add_argument('--episode_length', default=1000, type=int)
 	parser.add_argument('--mode', default='train', type=str)
+	parser.add_argument('--obs_type', default='pixel', type=str) # structured or pixel
 	
 	# agent
 	parser.add_argument('--init_steps', default=1000, type=int)
@@ -20,8 +21,8 @@ def parse_args():
 	parser.add_argument('--hidden_dim', default=1024, type=int)
 
 	# eval
-	parser.add_argument('--save_freq', default=100000, type=int)
-	parser.add_argument('--eval_freq', default=100000, type=int)
+	parser.add_argument('--save_freq', default=50000, type=int)
+	parser.add_argument('--eval_freq', default=50000, type=int)
 	parser.add_argument('--eval_episodes', default=10, type=int)
 
 	# critic
@@ -60,10 +61,11 @@ def parse_args():
 	parser.add_argument('--alpha_beta', default=0.5, type=float)
 
 	# misc
-	parser.add_argument('--seed', default=None, type=int)
+	parser.add_argument('--seed', default=0, type=int)
 	parser.add_argument('--work_dir', default=None, type=str)
 	parser.add_argument('--save_model', default=False, action='store_true')
 	parser.add_argument('--save_video', default=False, action='store_true')
+	parser.add_argument('--note', default=None, type=str)
 
 	# test
 	parser.add_argument('--pad_checkpoint', default=None, type=str)
@@ -72,7 +74,7 @@ def parse_args():
 
 	args = parser.parse_args()
 
-	assert args.mode in {'train', 'color_easy', 'color_hard'} or 'video' in args.mode, f'unrecognized mode "{args.mode}"'
+	# assert args.mode in {'train', 'color_easy', 'color_hard'} or 'video' in args.mode, f'unrecognized mode "{args.mode}"'
 	assert args.seed is not None, 'must provide seed for experiment'
 	assert args.work_dir is not None, 'must provide a working directory for experiment'
 
@@ -80,6 +82,8 @@ def parse_args():
 		'can use at most one self-supervised task'
 
 	if args.pad_checkpoint is not None:
+		if args.pad_checkpoint == 'best':
+			return args
 		try:
 			args.pad_checkpoint = args.pad_checkpoint.replace('k', '000')
 			args.pad_checkpoint = int(args.pad_checkpoint)

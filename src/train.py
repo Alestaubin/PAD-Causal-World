@@ -15,10 +15,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 # Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(funcName)s - %(message)s'
-)
+
 def evaluate(env, agent, video, num_episodes, L, step):
 	"""Evaluate agent"""
 	for i in range(num_episodes):
@@ -36,23 +33,34 @@ def evaluate(env, agent, video, num_episodes, L, step):
 		video.save('%d.mp4' % step)
 		L.log('eval/episode_reward', episode_reward, step)
 	L.dump(step)
+	return episode_reward
 
 
 def main(args):
+	# write a readme file with args.note in work_dir
+	if args.note is not None:
+		if not os.path.exists(args.work_dir):
+			os.makedirs(args.work_dir)
+		note_file = os.path.join(args.work_dir, 'README.txt')
+		with open(note_file, 'w') as f:
+			f.write(args.note)
+			f.write('\n')
+			f.write(str(args))
 	# Initialize environment
 	utils.set_seed_everywhere(args.seed)
 	
 	if args.domain_name == 'causalworld':
 		from env.CausalWorld_wrappers import make_pad_env_causalworld
 		env = make_pad_env_causalworld(
-				task_name="pushing",
-				seed=42,
-				episode_length=1000,
-				frame_stack=3,
-				action_repeat=4,
-				mode='color_hard',
+				task_name=args.task_name,
+				seed=args.seed,
+				episode_length=args.episode_length,
+				frame_stack=args.frame_stack,
+				action_repeat=args.action_repeat,
+				mode=args.mode,
 				camera_index=[0], 
-				enable_visualization=False
+				enable_visualization=False,
+				obs_type=args.obs_type # structured or pixel 
 		)
 	else:
 		from env.wrappers import make_pad_env
@@ -80,10 +88,14 @@ def main(args):
 		capacity=args.train_steps,
 		batch_size=args.batch_size
 	)
-	cropped_obs_shape = (3*args.frame_stack, 84, 84)
+	if args.obs_type == 'pixel':
+		obs_shape = (3*args.frame_stack, 84, 84) # cropped pixel obs
+	else:
+		obs_shape = env.observation_space.shape
 	agent = make_agent(
+		obs_type=args.obs_type,
+		obs_shape=obs_shape,
 		device=device,
-		obs_shape=cropped_obs_shape,
 		action_shape=env.action_space.shape,
 		args=args
 	)
@@ -91,6 +103,7 @@ def main(args):
 	L = Logger(args.work_dir, use_tb=False)
 	episode, episode_reward, done = 0, 0, True
 	start_time = time.time()
+	best_eval_reward = -float('inf')
 	for step in range(args.train_steps+1):
 		if done:
 			if step > 0:
@@ -102,8 +115,13 @@ def main(args):
 			if step % args.eval_freq == 0:
 				print('Evaluating:', args.work_dir)
 				L.log('eval/episode', episode, step)
-				evaluate(env, agent, video, args.eval_episodes, L, step)
-			
+				eval_episode_reward = evaluate(env, agent, video, args.eval_episodes, L, step)
+				
+				if eval_episode_reward > best_eval_reward:
+					best_eval_reward = eval_episode_reward
+					if args.save_model:
+						agent.save(model_dir, 'best')
+				
 			# Save agent periodically
 			if step % args.save_freq == 0 and step > 0:
 				if args.save_model:
@@ -118,7 +136,7 @@ def main(args):
 			episode += 1
 
 			L.log('train/episode', episode, step)
-		if step % 1000 == 0:
+		if step % 1000 == 0 and args.obs_type == 'pixel':
 			
 			# Get the last observation from the replay buffer
 			# Shape is likely (9, 100, 100) due to FrameStack=3 * RGB=3
@@ -131,7 +149,7 @@ def main(args):
 			for i in range(3):
 				debug_img = np.transpose(debug_obs[i*3:(i+1)*3, :, :], (1, 2, 0))
 			
-				print(f"DEBUG: Obs Min: {debug_img.min()}, Max: {debug_img.max()}, Type: {debug_img.dtype}")
+				# print(f"DEBUG: Obs Min: {debug_img.min()}, Max: {debug_img.max()}, Type: {debug_img.dtype}")
 				
 				plt.imshow(debug_img)
 				plt.savefig(f"debug_agent_view_{step}_{i}.png")
@@ -157,12 +175,12 @@ def main(args):
 		# Take step
 		next_obs, reward, done, _ = env.step(action)
 		# done_bool = 0 if episode_step + 1 == env._max_episode_steps else float(done)
-		done_bool = float(done)
+		done_bool = 0 if step % args.eval_freq == 0 else float(done)
 		replay_buffer.add(obs, action, reward, next_obs, done_bool)
 		episode_reward += reward
 		obs = next_obs
 		episode_step += 1
-
+		prev_step = step
 
 if __name__ == '__main__':
 	args = parse_args()

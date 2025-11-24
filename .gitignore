@@ -1,4 +1,13 @@
 __pycache__/
+*.mp4
+*.pt
+*.pth
+*.pkl
+# Ignore output directories
+video/
+model/
+buffer/
+logs/
 src/CausalWorld/
 *DS_Store
 *.pyc

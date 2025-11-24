@@ -12,11 +12,12 @@ def make_pad_env_causalworld(
         task_name="pushing",          # e.g., 'pushing', 'stacking'
         seed=0,
         episode_length=1000,
-        frame_stack=3,
+        frame_stack=3, 
         action_repeat=4,
         mode='train',
         camera_index=[0], 
-        enable_visualization=False
+        enable_visualization=False,
+        obs_type='pixel' # 'structured' or 'pixel'
     ):
     """
     Make environment for PAD experiments adapted for CausalWorld.
@@ -30,27 +31,34 @@ def make_pad_env_causalworld(
     task = generate_task(task_generator_id=task_name)
     
     # 2. Initialize Environment with visual observation enabled
+    print(f"Creating {task_name} CausalWorld env with the following parameters:")
+    print(f"  seed: {seed}, episode_length: {episode_length}, action_repeat: {action_repeat}, obs_type: {obs_type}")
+
     env = CausalWorld(
         task=task,
         enable_visualization=enable_visualization,  # indicates if a GUI is enabled or the environment should operate in a headless mode
         seed=seed,
         action_mode="joint_positions", # Or 'end_effector_positions' depending on your policy
-        observation_mode = "pixel", # Ensure pixel observations, not structured
+        observation_mode = obs_type, 
         normalize_actions=True,
         skip_frame=action_repeat,
-        max_episode_length=episode_length,
+        max_episode_length=episode_length-1, # off by one, unsurprisingly
         camera_indicies=camera_index
     )
 
     # 3. Wrap to Extract Pixels and Convert to (C, H, W)
     # CausalWorld returns a Dict; PAD expects a standard pixel array.
-    env = CausalWorldFromPixels(env, height=100, width=100)
-    
-    # 4. Apply Domain Randomization (The "PAD" Adaptation logic)
-    env = CausalDomainWrapper(env, mode)
+    if obs_type == 'pixel':
+        env = CausalWorldFromPixels(env, height=100, width=100)
+        
+        # 4. Apply Domain Randomization (The "PAD" Adaptation logic)
+        env = CausalDomainWrapper(env, mode)
 
-    # 5. Frame Stacking (Original PAD wrapper)
-    env = FrameStack(env, frame_stack)
+        # 5. Frame Stacking (Original PAD wrapper)
+        env = FrameStack(env, frame_stack)
+    else:
+        # For structured observations, we can still apply domain randomization
+        env = CausalDomainWrapper(env, mode)
 
     return env
 
@@ -107,12 +115,11 @@ class CausalDomainWrapper(gym.Wrapper):
         
     def reset(self):
         # In CausalWorld, we randomize via reset or specific randomize functions
-        if 'color' in self._mode:
-            self.randomize()
-        if 'video' in self._mode:
-            raise NotImplementedError("Video mode with greenscreen not implemented for CausalWorld.")
-        # Standard reset
-        return self.env.reset()
+        obs = self.env.reset()
+        if self._mode != 'train':
+            return self.randomize()
+        return obs
+        # return self.env.reset()
 
     def step(self, action):
         return self.env.step(action)
@@ -121,18 +128,31 @@ class CausalDomainWrapper(gym.Wrapper):
         """
         Applies domain randomization specific to CausalWorld.
         """
-        
+        if self._mode == 'train':
+            return  # No randomization in train mode
         if 'color' in self._mode:
             # randomize floor_color:
             color = np.random.uniform(0.5, 1, size=3).tolist()
             success_signal, obs = self.env.do_intervention({'floor_color': color})
             # print(f"Randomized floor color to {color}, success: {success_signal}")
-        if 'goal' in self._mode:
+        elif 'goal' in self._mode:
             goal_intervention_dict = self.env.sample_new_goal()
             success_signal, obs = self.env.do_intervention(goal_intervention_dict)
-            print("Goal Intervention for CF env success signal", success_signal)
-
-
+            # print("Goal Intervention for CF env success signal", success_signal)
+        elif 'weight' in self._mode:
+            # Randomize object weights
+            mass = np.random.uniform(0.015, 0.045, [1,]) # space a
+            success_signal, obs = self.env.do_intervention({'tool_block': {'mass': mass}})
+            # print("Mass Intervention for CF env success signal", success_signal)
+        elif 'finger_link_mass' in self._mode:
+            names = ['robot_finger_60_link_'+str(i) for i in range(0,3)] + ['robot_finger_120_link_'+str(i) for i in range(0,3)] + ['robot_finger_300_link_'+str(i) for i in range(0,3)]
+            for name in names:
+                mass = np.random.uniform(0.015, 0.045, [1,]) # space a
+                success_signal, obs = self.env.do_intervention({name: {'mass': mass}})
+                # print("Mass Intervention for CF env success signal", success_signal)
+        else: 
+            raise NotImplementedError(f"Randomization mode {self._mode} not implemented for CausalWorld.")
+        return obs
 
 # --- ORIGINAL FrameStack (Unchanged) ---
 class FrameStack(gym.Wrapper):

@@ -1,6 +1,6 @@
 import imageio
 import os
-
+from env.CausalWorld_wrappers import CausalDomainWrapper
 
 class VideoRecorder(object):
     def __init__(self, dir_name, height=100, width=100, camera_id=0, fps=25):
@@ -17,12 +17,15 @@ class VideoRecorder(object):
 
     def record(self, env, losses=[]):
         if self.enabled:
-            frame = env.render(
-                mode='rgb_array',
-                height=self.height,
-                width=self.width,
-                camera_id=self.camera_id
-            )
+            if isinstance(env, CausalDomainWrapper):
+                frame = env.render()
+            else:
+                frame = env.render(
+                    mode='rgb_array',
+                    height=self.height,
+                    width=self.width,
+                    camera_id=self.camera_id
+                )
             if 'video' in env._mode:
                 greenscreen = env.env.env
                 frame = greenscreen.apply_to(frame)
