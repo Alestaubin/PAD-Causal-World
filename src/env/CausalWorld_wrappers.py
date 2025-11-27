@@ -139,18 +139,19 @@ class CausalDomainWrapper(gym.Wrapper):
             goal_intervention_dict = self.env.sample_new_goal()
             success_signal, obs = self.env.do_intervention(goal_intervention_dict)
             # print("Goal Intervention for CF env success signal", success_signal)
-        elif 'weight' in self._mode:
-            # Randomize object weights
-            mass = np.random.uniform(0.015, 0.045, [1,]) # space a
-            success_signal, obs = self.env.do_intervention({'tool_block': {'mass': mass}})
-            # print("Mass Intervention for CF env success signal", success_signal)
         elif 'finger_link_mass' in self._mode:
             names = ['robot_finger_60_link_'+str(i) for i in range(0,3)] + ['robot_finger_120_link_'+str(i) for i in range(0,3)] + ['robot_finger_300_link_'+str(i) for i in range(0,3)]
             for name in names:
                 mass = np.random.uniform(0.015, 0.045, [1,]) # space a
                 success_signal, obs = self.env.do_intervention({name: {'mass': mass}})
-                # print("Mass Intervention for CF env success signal", success_signal)
-        else: 
+                print("Finger link Mass Intervention for CF env success signal", success_signal)
+        elif 'mass' in self._mode:
+            # Randomize object weights
+            mass = np.random.uniform(0.015, 0.045, [1,]) # space a
+            success_signal, obs = self.env.do_intervention({'tool_block': {'mass': mass}})
+            print("Mass Intervention for CF env success signal", success_signal)
+
+        else:
             raise NotImplementedError(f"Randomization mode {self._mode} not implemented for CausalWorld.")
         return obs
 

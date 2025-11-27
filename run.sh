@@ -61,11 +61,11 @@ python3 src/eval.py \
         --obs_type "structured" \
         --save_video \
         --use_inv \
-        --seed 999 \
+        --seed 1 \
         --num_layers 4 \
         --num_shared_layers 4 \
         --pad_checkpoint best \
-        --pad_num_episodes 10
+        --pad_num_episodes 5
 
 # python3 src/eval.py \
 #     --domain_name "causalworld" \
