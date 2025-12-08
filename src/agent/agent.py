@@ -351,7 +351,14 @@ class SacSSAgent(object):
             if use_inv:
                 self.inv = InvFunction(encoder_feature_dim, action_shape[0], hidden_dim).to(self.device)
                 self.inv.apply(weight_init)
-            
+
+            norm_params = []
+            if hasattr(self.ss_encoder, 'norms'):
+                for norm in self.ss_encoder.norms:
+                    norm_params.extend(list(norm.parameters()))
+            print(f"Found {len(norm_params)} normalization parameters to adapt.")
+            self.norm_optimizer = torch.optim.Adam(norm_params, lr=encoder_lr * 0.1)
+
         # curl
         if use_curl:
             self.curl = CURL(obs_shape, encoder_feature_dim,
@@ -499,21 +506,28 @@ class SacSSAgent(object):
 
         return rot_loss.item()
 
-    def update_inv(self, obs, next_obs, action, L=None, step=None):
+    def update_inv(self, obs, next_obs, action, L=None, step=None, adapt=False):
         # assert obs.shape[-1] == 84 and next_obs.shape[-1] == 84
 
+        # Forward Pass
         h = self.ss_encoder(obs)
         h_next = self.ss_encoder(next_obs)
-
         pred_action = self.inv(h, h_next)
         inv_loss = F.mse_loss(pred_action, action)
 
-        self.encoder_optimizer.zero_grad()
-        self.inv_optimizer.zero_grad()
-        inv_loss.backward()
-
-        self.encoder_optimizer.step()
-        self.inv_optimizer.step()
+        if adapt:
+            # ADAPTATION TIME: Update Norms Only
+            self.norm_optimizer.zero_grad()
+            inv_loss.backward()
+            # the norm optimizer only updates the normalization layers, with a smaller lr
+            self.norm_optimizer.step()
+        else: 
+            # TRAINING TIME: Update Weights + Head
+            self.encoder_optimizer.zero_grad()
+            self.inv_optimizer.zero_grad()
+            inv_loss.backward()
+            self.encoder_optimizer.step()
+            self.inv_optimizer.step()
 
         if L is not None:
             L.log('train_inv/inv_loss', inv_loss, step)

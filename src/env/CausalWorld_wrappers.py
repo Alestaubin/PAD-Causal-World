@@ -29,7 +29,6 @@ def make_pad_env_causalworld(
     
     # 1. Create the CausalWorld Task
     task = generate_task(task_generator_id=task_name)
-    
     # 2. Initialize Environment with visual observation enabled
     print(f"Creating {task_name} CausalWorld env with the following parameters:")
     print(f"  seed: {seed}, episode_length: {episode_length}, action_repeat: {action_repeat}, obs_type: {obs_type}")
@@ -104,56 +103,141 @@ class CausalWorldFromPixels(gym.Wrapper):
         img = np.transpose(img, (2, 0, 1))
         return img
 
+import numpy as np
+import gym
+
 class CausalDomainWrapper(gym.Wrapper):
     """
     Replaces the 'ColorWrapper' from the original PAD code.
-    Uses CausalWorld's do_intervention.
+    Uses CausalWorld's do_intervention to randomize physics or goals.
     """
     def __init__(self, env, mode):
         gym.Wrapper.__init__(self, env)
         self._mode = mode
         
-    def reset(self):
-        # In CausalWorld, we randomize via reset or specific randomize functions
+        # This is the default mass that the model was trained with
+        self.default_link_mass = 0.02 # Example default kg
+        
+    def reset(self, **kwargs):
+        # We forward kwargs from reset() to randomize()
+        # This allows you to call env.reset(mass_scale=2.0)
         obs = self.env.reset()
         if self._mode != 'train':
-            return self.randomize()
-        return obs
-        # return self.env.reset()
+            # Pass all kwargs (like mass_scale, fixed_mass) to randomize
+            return self.randomize(self._mode, **kwargs)
+        else:
+            return self.randomize("finger_link_mass", fixed_mass=0.02, mass_noise=0.0)
+        
 
     def step(self, action):
         return self.env.step(action)
 
-    def randomize(self):
+    def randomize(self, mode, goal_displacement=None, mass_scale=None, fixed_mass=None, mass_noise=0.001, **kwargs):
         """
         Applies domain randomization specific to CausalWorld.
+        
+        Args:
+            goal_displacement (float): radius to displace the goal position.
+            mass_scale (float): Multiplier for the mass (e.g., 1.5 = 50% heavier).
+            fixed_mass (float): Specific mass value to set (overrides scale).
+            mass_noise (float): Magnitude of uniform noise added to the mass 
+                                (e.g., mass +/- mass_noise).
         """
-        if self._mode == 'train':
-            return  # No randomization in train mode
-        if 'color' in self._mode:
-            # randomize floor_color:
-            color = np.random.uniform(0.5, 1, size=3).tolist()
-            success_signal, obs = self.env.do_intervention({'floor_color': color})
-            # print(f"Randomized floor color to {color}, success: {success_signal}")
-        elif 'goal' in self._mode:
-            goal_intervention_dict = self.env.sample_new_goal()
+
+        if 'goal' in mode:
+            # cylindrical coordinates: [radius, angle, height] 
+            # bounds: [[0.0, - math.pi, 0.0075], [0.11, math.pi, 0.15]]
+
+            default_goal_60 = [0.0, 0.0, 0.1]
+            default_goal_120 = [0.0, 0.0, 0.13]
+            default_goal_300 = [0.0, 0.0, 0.15]
+            default_goals = [default_goal_60, default_goal_120, default_goal_300]
+            names = ['goal_60', 'goal_120', 'goal_300']
+            
+            target_goals = []
+            # angle = np.random.uniform(-np.pi, np.pi)
+            # radius = goal_displacement
+
+            for default_goal in default_goals:
+                if goal_displacement is not None:
+                    # Randomly sample a new goal position within a circle of radius goal_displacement
+                    angle = np.random.uniform(-np.pi, np.pi)
+                    radius = goal_displacement
+                    target_pos = [
+                        radius,
+                        angle,
+                        default_goal[2]
+                    ]
+                else:
+                    raise ValueError("goal_displacement must be provided for goal randomization.")
+                target_goals.append(target_pos)
+            
+            goal_intervention_dict = {
+                names[i]: {'cylindrical_position': np.array(target_goals[i])} 
+                for i in range(len(names))
+            }
+            # print("Goal intervention dict:", goal_intervention_dict)
             success_signal, obs = self.env.do_intervention(goal_intervention_dict)
-            # print("Goal Intervention for CF env success signal", success_signal)
-        elif 'finger_link_mass' in self._mode:
-            names = ['robot_finger_60_link_'+str(i) for i in range(0,3)] + ['robot_finger_120_link_'+str(i) for i in range(0,3)] + ['robot_finger_300_link_'+str(i) for i in range(0,3)]
+            # print(f"Goal Intervention applied. Success={success_signal}")
+        elif 'finger_link_mass' in mode:
+            # Generate list of all finger links
+            # TriFinger has 3 fingers (0, 120, 240/300 degrees), each with links 0, 1, 2
+            names = (
+                ['robot_finger_60_link_'+str(i) for i in range(0,3)] + 
+                ['robot_finger_120_link_'+str(i) for i in range(0,3)] + 
+                ['robot_finger_300_link_'+str(i) for i in range(0,3)]
+            )
+            
             for name in names:
-                mass = np.random.uniform(0.015, 0.045, [1,]) # space a
-                success_signal, obs = self.env.do_intervention({name: {'mass': mass}})
-                print("Finger link Mass Intervention for CF env success signal", success_signal)
-        elif 'mass' in self._mode:
-            # Randomize object weights
-            mass = np.random.uniform(0.015, 0.045, [1,]) # space a
-            success_signal, obs = self.env.do_intervention({'tool_block': {'mass': mass}})
-            print("Mass Intervention for CF env success signal", success_signal)
+                # 1. Determine Base Mass
+                if fixed_mass is not None:
+                    target_mass = fixed_mass
+                elif mass_scale is not None:
+                    # Scale based on the default reference
+                    target_mass = self.default_link_mass * mass_scale
+                else:
+                    # Fallback to the original random uniform logic if no args provided
+                    target_mass = np.random.uniform(0.015, 0.045)
+
+                # 2. Add Noise (target +/- noise)
+                if mass_noise > 0:
+                    noise = np.random.uniform(-mass_noise, mass_noise)
+                    target_mass += noise
+
+                # 3. Apply Safety Bounds ()
+                target_mass = max(0.015, target_mass)
+                target_mass = min(0.045, target_mass)  
+
+                # Apply intervention
+                success_signal, obs = self.env.do_intervention({
+                    name: {'mass': np.array([target_mass])}
+                })
+                print(f"Intervention {name}: Mass={target_mass:.4f}, Success={success_signal}")
+
+        elif 'mass' in mode:
+            # Randomize object (tool_block) weights
+            if fixed_mass is not None:
+                mass_val = fixed_mass
+            elif mass_scale is not None:
+                mass_val = 0.03 * mass_scale
+            else:
+                mass_val = np.random.uniform(0.015, 0.045)
+            
+            # Add Noise
+            if mass_noise > 0:
+                mass_val += np.random.uniform(-mass_noise, mass_noise)
+                
+            mass_val = max(0.001, mass_val)
+
+            success_signal, obs = self.env.do_intervention({'tool_block': {'mass': np.array([mass_val])}})
+            # print(f"Block Mass Intervention: {mass_val:.4f}, Success={success_signal}")
 
         else:
             raise NotImplementedError(f"Randomization mode {self._mode} not implemented for CausalWorld.")
+            
         return obs
+    
+
 
 # --- ORIGINAL FrameStack (Unchanged) ---
 class FrameStack(gym.Wrapper):
@@ -185,3 +269,47 @@ class FrameStack(gym.Wrapper):
     def _get_obs(self):
         assert len(self._frames) == self._k
         return np.concatenate(list(self._frames), axis=0)
+    
+
+# class CausalDomainWrapper(gym.Wrapper):
+#     """
+#     Replaces the 'ColorWrapper' from the original PAD code.
+#     Uses CausalWorld's do_intervention.
+#     """
+#     def __init__(self, env, mode):
+#         gym.Wrapper.__init__(self, env)
+#         self._mode = mode
+#     def reset(self, mode, **kwargs):
+#         # In CausalWorld, we randomize via reset or specific randomize functions
+#         obs = self.env.reset()
+#         if self._mode != 'train':
+#             self.randomize(mode=self._mode, **kwargs)
+#         return obs
+#         # return self.env.reset()
+
+#     def step(self, action):
+#         return self.env.step(action)
+
+#     def randomize(self, **kwargs):
+#         """
+#         Applies domain randomization specific to CausalWorld.
+#         """
+#         if 'goal' in self._mode:
+#             goal_intervention_dict = self.env.sample_new_goal()
+#             success_signal, obs = self.env.do_intervention(goal_intervention_dict)
+#             # print("Goal Intervention for CF env success signal", success_signal)
+#         elif 'finger_link_mass' in self._mode:
+#             names = ['robot_finger_60_link_'+str(i) for i in range(0,3)] + ['robot_finger_120_link_'+str(i) for i in range(0,3)] + ['robot_finger_300_link_'+str(i) for i in range(0,3)]
+#         for name in names:
+#             mass = np.random.uniform(0.015, 0.045, [1,]) # space a
+#             success_signal, obs = self.env.do_intervention({name: {'mass': mass}})
+#             print("Finger link Mass Intervention for CF env success signal", success_signal)
+#         elif 'mass' in self._mode:
+#             # Randomize object weights
+#             mass = np.random.uniform(0.015, 0.045, [1,]) # space a
+#             success_signal, obs = self.env.do_intervention({'tool_block': {'mass': mass}})
+#             print("Mass Intervention for CF env success signal", success_signal)
+#         else:
+#             raise NotImplementedError(f"Randomization mode {self._mode} not implemented for CausalWorld.")
+        
+#         return obs

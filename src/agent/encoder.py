@@ -90,7 +90,7 @@ class IdentityEncoder(nn.Module):
 	Deep encoder for 1D vector observations.
 	Projects the state vector to the hidden feature dimension using an MLP.
 	"""
-	def __init__(self, obs_shape, feature_dim, num_layers, num_filters, *args):
+	def __init__(self, obs_shape, feature_dim, num_layers, num_shared_layers, *args):
 		super().__init__()
 		assert len(obs_shape) == 1
 		self.feature_dim = feature_dim
@@ -108,6 +108,7 @@ class IdentityEncoder(nn.Module):
 			self.layers.append(nn.Linear(feature_dim, feature_dim))
 
 		self.ln = nn.LayerNorm(feature_dim)
+		self.num_shared_layers = num_shared_layers  
 
 	def forward(self, obs, detach=False):
 		# obs shape: (batch_size, obs_dim)
@@ -116,9 +117,12 @@ class IdentityEncoder(nn.Module):
 		# Pass through the MLP layers
 		for i, layer in enumerate(self.layers):
 			out = layer(out)
-			# Apply ReLU after every layer except the last one (optional, but standard for MLP)
+			# Apply ReLU after every layer except the last one 
 			if i < len(self.layers) - 1:
 				out = F.relu(out)
+
+			if detach and (i == self.num_shared_layers - 1):
+				out = out.detach()
 		
 		# Final processing
 		out = self.ln(out)
@@ -143,6 +147,69 @@ class IdentityEncoder(nn.Module):
 			if i < len(self.layers) and i < len(source.layers):
 				tie_weights(src=source.layers[i], trg=self.layers[i])
 
+class IdentityEncoder2(nn.Module):
+	"""
+	Deep encoder for 1D vector observations.
+	Projects the state vector to the hidden feature dimension using an MLP.
+	"""
+	def __init__(self, obs_shape, feature_dim, num_layers, num_shared_layers, *args):
+		super().__init__()
+		assert len(obs_shape) == 1
+		self.feature_dim = feature_dim
+		self.num_layers = num_layers
+		
+		# Define a stack of Linear layers (MLP)
+		self.layers = nn.ModuleList()
+		self.norms = nn.ModuleList()
+		
+		# First layer: Input dimension -> Feature Dimension
+		self.layers.append(nn.Linear(obs_shape[0], feature_dim))
+		self.norms.append(nn.LayerNorm(feature_dim))
+		
+		for _ in range(num_layers - 1):
+			self.layers.append(nn.Linear(feature_dim, feature_dim))
+			self.norms.append(nn.LayerNorm(feature_dim))
+
+		self.num_shared_layers = num_shared_layers  
+
+	def forward(self, obs, detach=False):
+		# obs shape: (batch_size, obs_dim)
+		out = obs
+		
+		# Pass through the MLP layers
+		for i, (layer, norm) in enumerate(zip(self.layers, self.norms)):	
+			out = layer(out)
+			out = norm(out)
+
+			# Apply ReLU after every layer except the last one 
+			if i < len(self.layers) - 1:
+				out = F.relu(out)
+
+			if detach and (i == self.num_shared_layers - 1):
+				out = out.detach()
+		
+		out = torch.tanh(out) # Tanh to match PixelEncoder distribution
+
+		if detach:
+			out = out.detach()
+		return out
+
+	def copy_conv_weights_from(self, source, n=None):
+		"""
+		Tie the weights of the MLP layers.
+		Even though these aren't convolutions, we maintain the naming 
+		convention to stay compatible with the Agent's API.
+		"""
+		if n is None:
+			n = self.num_layers
+		
+		# Tie the weights for the first n layers
+		for i in range(n):
+			print(" Tying layer ", i)
+			if i < len(self.layers) and i < len(source.layers):
+				tie_weights(src=source.layers[i], trg=self.layers[i])
+				tie_weights(src=source.norms[i], trg=self.norms[i])
+
 
 def make_encoder(
     obs_type, obs_shape, feature_dim, num_layers, num_filters, num_shared_layers
@@ -159,8 +226,8 @@ def make_encoder(
         )
         
     elif obs_type == 'structured':
-        return IdentityEncoder(
-            obs_shape, feature_dim, num_layers, num_filters
+        return IdentityEncoder2(
+            obs_shape, feature_dim, num_layers, num_filters, num_shared_layers
         )
     
     else:

@@ -14,17 +14,12 @@ from utils import get_curl_pos_neg
 def evaluate(env, device, agent, args, video, adapt=False):
 	"""Evaluate an agent, optionally adapt using PAD"""
 	episode_rewards = []
+	num_success = 0
+	steps_to_success = []
 
 	for i in tqdm(range(args.pad_num_episodes)):
 		ep_agent = deepcopy(agent) # make a new copy
 
-		if args.use_curl: # initialize replay buffer for CURL
-			replay_buffer = utils.ReplayBuffer(
-				obs_shape=env.observation_space.shape,
-				action_shape=env.action_space.shape,
-				capacity=args.train_steps,
-				batch_size=args.pad_batch_size
-			)
 		video.init(enabled=True)
 
 		obs = env.reset()
@@ -38,51 +33,38 @@ def evaluate(env, device, agent, args, video, adapt=False):
 			# Take step
 			with utils.eval_mode(ep_agent):
 				action = ep_agent.select_action(obs)
-			next_obs, reward, done, _ = env.step(action)
+			next_obs, reward, done, info = env.step(action)
 			episode_reward += reward
+			
+			success = info['success'] 
+			if success:
+				num_success += 1
+				steps_to_success.append(step)
+				break
 
 			# Make self-supervised update if flag is true
-			if adapt:
-				if args.use_rot: # rotation prediction
-
-					# Prepare batch of cropped observations
-					batch_next_obs = utils.batch_from_obs(torch.Tensor(next_obs).to(device), batch_size=args.pad_batch_size)
-					batch_next_obs = utils.random_crop(batch_next_obs)
-
-					# Adapt using rotation prediction
-					losses.append(ep_agent.update_rot(batch_next_obs))
-				
+			if adapt:				
 				if args.use_inv: # inverse dynamics model
 
 					# Prepare batch of observations
 					if args.obs_type == 'pixel':
 						batch_obs = utils.batch_from_obs(torch.Tensor(obs).to(device), batch_size=args.pad_batch_size)
 						batch_next_obs = utils.batch_from_obs(torch.Tensor(next_obs).to(device), batch_size=args.pad_batch_size)
-					else: # structured obs
-						batch_obs = utils.batch_from_obs_structured(torch.Tensor(obs).to(device), batch_size=args.pad_batch_size)
-						batch_next_obs = utils.batch_from_obs_structured(torch.Tensor(next_obs).to(device), batch_size=args.pad_batch_size)
-
-					batch_action = torch.Tensor(action).to(device).unsqueeze(0).repeat(args.pad_batch_size, 1)
-
-					# Adapt using inverse dynamics prediction
-					if args.obs_type == 'pixel':
 						# Crop if pixel observations
 						batch_obs = utils.random_crop(batch_obs)
 						batch_next_obs = utils.random_crop(batch_next_obs)
+					
+					else: # structured obs
+						batch_obs = utils.batch_from_obs_structured(torch.Tensor(obs).to(device), batch_size=args.pad_batch_size)
+						batch_next_obs = utils.batch_from_obs_structured(torch.Tensor(next_obs).to(device), batch_size=args.pad_batch_size)
+						
+						noise_std = 0.01
+						batch_obs += torch.randn_like(batch_obs) * noise_std
+						batch_next_obs += torch.randn_like(batch_next_obs) * noise_std
+						
+					batch_action = torch.Tensor(action).to(device).unsqueeze(0).repeat(args.pad_batch_size, 1)
 
-					losses.append(ep_agent.update_inv(batch_obs, batch_next_obs, batch_action))
-
-				if args.use_curl: # CURL
-
-					# Add observation to replay buffer for use as negative samples
-					# (only first argument obs is used, but we store all for convenience)
-					replay_buffer.add(obs, action, reward, next_obs, True)
-
-					# Prepare positive and negative samples
-					obs_anchor, obs_pos = get_curl_pos_neg(next_obs, replay_buffer)
-
-					# Adapt using CURL
-					losses.append(ep_agent.update_curl(obs_anchor, obs_pos, ema=True))
+					losses.append(ep_agent.update_inv(batch_obs, batch_next_obs, batch_action, adapt=True))
 
 			video.record(env, losses)
 			obs = next_obs
@@ -90,8 +72,13 @@ def evaluate(env, device, agent, args, video, adapt=False):
 
 		video.save(f'{args.mode}_pad_{i}.mp4' if adapt else f'{args.mode}_eval_{i}.mp4')
 		episode_rewards.append(episode_reward)
-
-	return np.mean(episode_rewards)
+	
+	return {
+		'avg_ep_reward': np.mean(episode_rewards),
+		'success_rate': num_success / args.pad_num_episodes,
+		'avg_steps_to_success': np.mean(steps_to_success) if len(steps_to_success) > 0 else float('inf')
+	}
+	# return np.mean(episode_rewards)
 
 
 def init_env(args):
@@ -131,7 +118,6 @@ def main(args):
 	device = torch.device("mps")#("mps" if torch.backends.mps.is_available() else "cpu")
 	print("Using device:", device)
 	# Prepare agent
-	# assert torch.cuda.is_available(), 'must have cuda enabled'
 	if args.obs_type == 'pixel':
 		obs_shape = (3*args.frame_stack, 84, 84) # cropped pixel obs
 	else:
@@ -147,16 +133,18 @@ def main(args):
 
 	# Evaluate agent without PAD
 	print(f'Evaluating {args.work_dir} for {args.pad_num_episodes} episodes (mode: {args.mode})')
-	eval_reward = evaluate(env, device, agent, args, video)
-	print('eval reward:', int(eval_reward))
-
+	results = evaluate(env, device, agent, args, video)
+	eval_reward = results['avg_ep_reward']
+	print('eval reward:', int(results['avg_ep_reward']), 'success rate:', results['success_rate'], 'avg steps to success:', results['avg_steps_to_success'])
+	
 	# Evaluate agent with PAD (if applicable)
 	pad_reward = None
 	if args.use_inv or args.use_curl or args.use_rot:
 		env = init_env(args)
 		print(f'Policy Adaptation during Deployment of {args.work_dir} for {args.pad_num_episodes} episodes (mode: {args.mode})')
-		pad_reward = evaluate(env, device, agent, args, video, adapt=True)
-		print('pad reward:', int(pad_reward))
+		results_pad = evaluate(env, device, agent, args, video, adapt=True)
+		print('PAD eval reward:', int(results_pad['avg_ep_reward']), 'success rate:', results_pad['success_rate'], 'avg steps to success:', results_pad['avg_steps_to_success'])
+		pad_reward = results_pad['avg_ep_reward']
 
 	# Save results
 	results_fp = os.path.join(args.work_dir, f'pad_{args.mode}.pt')
@@ -166,7 +154,6 @@ def main(args):
 		'pad_reward': pad_reward
 	}, results_fp)
 	print('Saved results to', results_fp)
-
 
 if __name__ == '__main__':
 	args = parse_args()
