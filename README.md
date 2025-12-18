@@ -1,5 +1,4 @@
 # Adapting PAD to Trifinger Robotic Manipulation in Causal World
-PyTorch implementation of PAD and evaluation benchmarks from
 
 This repository contains the modified [codebase](https://github.com/nicklashansen/policy-adaptation-during-deployment) from the paper 
 ```
