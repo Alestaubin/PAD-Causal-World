@@ -47,6 +47,7 @@ def make_agent(obs_type, obs_shape, device, action_shape, args):
         num_shared_layers=args.num_shared_layers,
         num_filters=args.num_filters,
         curl_latent_dim=args.curl_latent_dim,
+        test_norm_lr=args.test_norm_lr,
     )
 
 
@@ -283,7 +284,8 @@ class SacSSAgent(object):
         num_layers=4,
         num_shared_layers=4,
         num_filters=32,
-        curl_latent_dim=128
+        curl_latent_dim=128,
+        test_norm_lr=1e-3,
     ):
         self.discount = discount
         self.critic_tau = critic_tau
@@ -357,7 +359,9 @@ class SacSSAgent(object):
                 for norm in self.ss_encoder.norms:
                     norm_params.extend(list(norm.parameters()))
             print(f"Found {len(norm_params)} normalization parameters to adapt.")
-            self.norm_optimizer = torch.optim.Adam(norm_params, lr=encoder_lr * 0.1)
+            print("Setting up optimizer for normalization parameters with lr =", test_norm_lr)
+            print("encoder lr:", encoder_lr)
+            self.norm_optimizer = torch.optim.Adam(norm_params, lr=test_norm_lr )
 
         # curl
         if use_curl:

@@ -31,12 +31,13 @@ def plot_average_cumulative_reward(all_step_histories, work_dir, scale):
     sns.set_theme(style="whitegrid")
     
     # Iterate through the 3 methods for this specific mass scale
-    methods = ['no_tta', 'episodic', 'lifelong']
-    colors = {'no_tta': 'gray', 'episodic': 'blue', 'lifelong': 'green'}
+    methods = ['no_inv', 'no_tta', 'episodic', 'lifelong']
+    colors = {'no_inv': 'red', 'no_tta': 'gray', 'episodic': 'blue', 'lifelong': 'green'}
     
     for method in methods:
         key = f"{method}_scale{scale}"
         if key not in all_step_histories:
+            print(f"Warning: No data for {key}, skipping cumulative reward plot.")
             continue
             
         # 1. Convert list of lists to 2D array (Episodes x Steps)
@@ -61,12 +62,12 @@ def plot_average_cumulative_reward(all_step_histories, work_dir, scale):
         plt.fill_between(x_axis, mean_curve - stderr_curve, mean_curve + stderr_curve, 
                          color=colors[method], alpha=0.15)
 
-    plt.title(f'Average Cumulative Reward (Mass Scale x{scale})', fontsize=14)
+    plt.title(f'Average Cumulative Reward (radius {scale})', fontsize=14)
     plt.xlabel('Episode Step')
     plt.ylabel('Cumulative Reward')
     plt.legend()
     
-    save_path = os.path.join(work_dir, f'plot_cumulative_reward_scale{scale}.png')
+    save_path = os.path.join(work_dir, f'plot_cumulative_reward_radius{scale}.png')
     plt.savefig(save_path)
     plt.close()
     print(f"Cumulative reward plot saved to {save_path}")
@@ -81,52 +82,16 @@ def plot_results(df, raw_curves, work_dir):
     # 1. Robustness Curve (Avg Return vs. Mass Scale)
     plt.figure(figsize=(10, 6))
     sns.lineplot(data=df, x='Scale', y='Avg_Return', hue='Method', marker='o', linewidth=2.5)
-    plt.title('Robustness to Mass Scaling (OOD Shifts)', fontsize=14)
+    plt.title('Robustness to Goal Displacement (OOD Shifts)', fontsize=14)
     plt.ylabel('Average Episode Return')
-    plt.xlabel('Scale Factor')
+    plt.xlabel('radius (meters)')
     plt.savefig(os.path.join(work_dir, 'plot_robustness_curve.png'))
     plt.close()
 
-    # 2. Adaptation Learning Curve (Lifelong TTA)
-    # We plot this for the hardest difficulty (highest mass scale) to see learning best.
-    max_scale = df['Scale'].max()
-    plt.figure(figsize=(10, 6))
     
-    # Extract lifelong curve for max scale
-    key = f"lifelong_scale{max_scale}"
-    if key in raw_curves:
-        data = raw_curves[key]
-        # Smooth the curve for readability
-        smoothed = pd.Series(data).rolling(window=5, min_periods=1).mean()
-        plt.plot(data, alpha=0.3, color='green', label='Raw')
-        plt.plot(smoothed, color='green', linewidth=2, label='Smoothed (MA-5)')
-        plt.title(f'Lifelong Adaptation Learning Curve (Mass x{max_scale})', fontsize=14)
-        plt.xlabel('Episode Index')
-        plt.ylabel('Episode Return')
-        plt.legend()
-        plt.savefig(os.path.join(work_dir, 'plot_lifelong_learning.png'))
-    plt.close()
-
-    # 3. Intra-Episode Regret (Episodic TTA)
-    # Compare Early vs Late reward to show "rapid adaptation"
-    episodic_df = df[df['Method'] == 'episodic']
-    if not episodic_df.empty:
-        plt.figure(figsize=(10, 6))
-        
-        # Melt dataframe for easier plotting with seaborn
-        melted = episodic_df.melt(id_vars=['Scale'], 
-                                  value_vars=['Early_Episode_Reward', 'Late_Episode_Reward'], 
-                                  var_name='Phase', value_name='Reward')
-        
-        sns.barplot(data=melted, x='Scale', y='Reward', hue='Phase', palette='viridis')
-        plt.title('Intra-Episode Adaptation: Early vs. Late', fontsize=14)
-        plt.ylabel('Average Step Reward')
-        plt.savefig(os.path.join(work_dir, 'plot_intra_episode_regret.png'))
-    plt.close()
-
     print(f"Plots saved to {work_dir}")
 
-def run_tta_experiment(env, agent, args, video, seed = 0, tta_mode='no_tta', scale=1.0):
+def run_tta_experiment(env, agent, args, video, tta_mode='no_tta', scale=1.0):
     """
     Runs a single experiment block (e.g., Lifelong TTA at +30% Mass).
     
@@ -141,8 +106,6 @@ def run_tta_experiment(env, agent, args, video, seed = 0, tta_mode='no_tta', sca
     metrics = {
         'episode_returns': [],
         'success_rate': 0.0,
-        'intra_episode_early': [], # Avg reward of first 20% steps
-        'intra_episode_late': [],  # Avg reward of last 20% steps
         'step_histories': []       # Full reward curves for analysis
     }
     
@@ -253,6 +216,140 @@ def init_env(args):
     )
     return env
 
+def run_all_tta_experiment(env, agent, no_inv_agent, args, video, scale=1.0):
+    """
+    Runs an experiment block where No-TTA, Episodic, and Lifelong agents
+    are evaluated on IDENTICAL environment instances for fairness.
+    
+    Args:
+        scale (float): The OOD severity (mass or goal displacement).
+    """
+
+    device = agent.device
+    num_episodes = args.pad_num_episodes
+
+    no_inv_agent = deepcopy(no_inv_agent)
+
+    agent_no_tta = deepcopy(agent)
+    
+    agent_lifelong = deepcopy(agent)
+    agent_lifelong.train()
+    
+    # -- METRICS STORAGE --
+    modes = ['no_tta', 'episodic', 'lifelong', 'no_inv']
+    results = {
+        mode: {
+            'episode_returns': [],
+            'success_count': 0,
+            'step_histories': []
+        } for mode in modes
+    }
+    
+    print(f"--> Running Comparison | Scale: {scale} | Episodes: {num_episodes}")
+    # generate a random seed
+    random_seed = np.random.randint(0, 1000000)
+    # Loop through episodes (Outer loop)
+    for i in tqdm(range(num_episodes), desc=f"Eval x{scale}"):
+        #episode_seed = args.seed + i
+        episode_seed = random_seed
+
+        for mode in modes:
+            # print("Mode:", mode)
+            # this way all modes get the same environment instances
+            utils.set_seed_everywhere(episode_seed)
+            
+            if args.mode == 'finger_link_mass':
+                obs = env.reset(scale=scale)
+            elif args.mode == 'goal':
+                obs = env.reset(goal_displacement=scale)
+            else:
+                raise ValueError(f"Unknown mode {args.mode}")
+
+            if mode == 'no_tta':
+                current_agent = agent_no_tta
+                adapt = False
+            elif mode == 'episodic':
+                # Reset agent to original baseline state
+                current_agent = deepcopy(agent) 
+                current_agent.train()
+                adapt = True
+            elif mode == 'lifelong':
+                # Continue using the persistent agent
+                current_agent = agent_lifelong
+                adapt = True
+            elif mode == 'no_inv':
+                current_agent = no_inv_agent
+                adapt = False
+
+            done = False
+            episode_reward = 0
+            step_rewards = []
+            success = False
+            
+            # Init video only for the last episode of the batch
+            if i == num_episodes - 1: 
+                video.init(enabled=True)
+                write_video = True
+            else:
+                write_video = False
+            
+            step = 0
+            while not done and step < 500:
+                step += 1
+                
+                with utils.eval_mode(current_agent):
+                    action = current_agent.select_action(obs)
+                
+                next_obs, reward, done, info = env.step(action)
+                if info.get('success', False):
+                    success = True
+
+                episode_reward += reward
+                step_rewards.append(reward)
+
+                # Test-Time Adaptation Update
+                if adapt:
+                    # Prepare batch (replicating single obs for batch compatibility)
+                    batch_obs = torch.Tensor(obs).to(device).unsqueeze(0).repeat(args.pad_batch_size, 1)
+                    batch_next_obs = torch.Tensor(next_obs).to(device).unsqueeze(0).repeat(args.pad_batch_size, 1)
+                    batch_action = torch.Tensor(action).to(device).unsqueeze(0).repeat(args.pad_batch_size, 1)
+                    
+                    # Add noise to batch (otherwise it's just the same obs repeated) 
+                    noise_std = 0.0075
+                    batch_obs += torch.randn_like(batch_obs) * noise_std
+                    batch_next_obs += torch.randn_like(batch_next_obs) * noise_std
+
+                    current_agent.update_inv(
+                        batch_obs, batch_next_obs, batch_action,
+                        adapt=True
+                    )
+
+                if write_video:
+                    video.record(env, None)
+
+                obs = next_obs
+            
+            # Save Video
+            if write_video:
+                video.save(f'{args.mode}_{mode}_scale{scale}.mp4')
+            # 5. Store Metrics
+            res = results[mode]
+            res['episode_returns'].append(episode_reward)
+            res['step_histories'].append(step_rewards)
+            if success:
+                res['success_count'] += 1
+
+    # Calculate final aggregate stats for all modes
+    final_metrics = {}
+    for mode in modes:
+        res = results[mode]
+        final_metrics[mode] = {
+            'episode_returns': res['episode_returns'],
+            'step_histories': res['step_histories'],
+            'success_rate': (res['success_count'] / num_episodes) * 100,
+        }
+    return final_metrics
+
 def main(args):
 
     work_dir = args.work_dir+"/"+get_time_str()
@@ -266,12 +363,20 @@ def main(args):
 
     env = init_env(args)
 
-    # Load Agent
-    if args.obs_type == 'pixel':
-        obs_shape = (3*args.frame_stack, 84, 84)
-    else:
-        obs_shape = env.observation_space.shape
-        
+    obs_shape = env.observation_space.shape
+    
+    args_no_inv = deepcopy(args) 
+    args_no_inv.use_inv = False
+    args_no_inv.work_dir = "logs/causal_world_reaching/no_inv/2/model"
+    no_inv_agent =  make_agent(
+		obs_type=args_no_inv.obs_type,
+		obs_shape=obs_shape,
+		device=device,
+		action_shape=env.action_space.shape,
+		args=args_no_inv
+	)
+    no_inv_agent.load(args_no_inv.work_dir, 'best')
+
     agent = make_agent(
         obs_type=args.obs_type,
         obs_shape=obs_shape,
@@ -279,71 +384,73 @@ def main(args):
         action_shape=env.action_space.shape,
         args=args
     )
-
-    # Checkpoint loading
     agent.load(model_dir, args.pad_checkpoint) 
 
     # --- EXPERIMENT CONFIGURATION ---
     # Define the OOD shifts (+10%, +30%, +50%)
     if args.mode == 'finger_link_mass':
-        scales = [1.0, 1.1, 1.3, 1.5] 
-    elif args.mode == 'goal':  
-        scales = [0.01, 0.03, 0.05]
-        # scales = [0.0]
-
-    # Define TTA Modes
-    tta_modes = ['no_tta', 'episodic', 'lifelong']
+        scales = [2.0]
+    elif args.mode == 'goal':
+        scales = [0.0, 0.01, 0.02, 0.025, 0.03, 0.035, 0.04, 0.045]
 
     # Storage for final DataFrame
     all_results = []
-    raw_curves = {} 
+    raw_curves = {}
     all_step_histories = {}
 
     # --- EXPERIMENT LOOP ---
-    for i, scale in enumerate(scales):
+    for scale in scales:
         print(f"\n=== EVALUATING SCALE: {scale} ===")
-        print(f"Scale Type: {'Mass Scaling' if args.mode == 'finger_link_mass' else 'Goal Displacement'}")
-        utils.set_seed_everywhere(i)
+        
+        # Run all 3 modes (no tta, episodic, lifelong)
+        metrics_all_modes = run_all_tta_experiment(env, agent=agent, no_inv_agent=no_inv_agent, args=args, video=video, scale=scale)
 
-        for mode in tta_modes:
-            # Run the experiment
-            metrics = run_tta_experiment(env, agent, args, video, seed=i, tta_mode=mode, scale=scale)
+        # Process results for each mode
+        for mode, metrics in metrics_all_modes.items():
+            
+            # Save raw data for plots
             raw_curves[f"{mode}_scale{scale}"] = metrics['episode_returns']
             all_step_histories[f"{mode}_scale{scale}"] = metrics['step_histories']
-            # Aggregate stats
+            
+            # Aggregate
             avg_return = np.mean(metrics['episode_returns'])
             std_return = np.std(metrics['episode_returns'])
-            avg_early = np.mean(metrics['intra_episode_early'])
-            avg_late = np.mean(metrics['intra_episode_late'])
-            adaptation_delta = avg_late - avg_early
             
-            # Save summary
             result_entry = {
                 'Scale': scale,
                 'Method': mode,
                 'Success_Rate': metrics['success_rate'],
                 'Avg_Return': avg_return,
                 'Std_Return': std_return,
-                'Early_Episode_Reward': avg_early,
-                'Late_Episode_Reward': avg_late,
-                'Adaptation_Improvement': adaptation_delta
             }
+            print(f"Method: {mode} | Scale: {scale} | Avg Return: {avg_return:.2f} | Success Rate: {metrics['success_rate']:.2f}%")
             all_results.append(result_entry)
-            
-            # Optional: Save detailed learning curves for plotting later
-            # np.save(f"{work_dir}/curves_{mode}_scale{scale}.npy", metrics['episode_returns'])
 
-    # --- DISPLAY & SAVE RESULTS ---
+            # plot reward per episode curve for lifelong at this scale
+            if mode == 'lifelong':
+                plt.figure(figsize=(10, 6))
+                data = metrics['episode_returns']
+                smoothed = pd.Series(data).rolling(window=5, min_periods=1).mean()
+                plt.plot(data, alpha=0.3, color='green', label='Raw')
+                plt.plot(smoothed, color='green', linewidth=2, label='Smoothed (MA-5)')
+                plt.title(f'Lifelong Adaptation Learning Curve (Radius {scale})', fontsize=14)
+                plt.xlabel('Episode Index')
+                plt.ylabel('Episode Return')
+                plt.legend()
+                plt.savefig(os.path.join(work_dir, f'plot_lifelong_learning_radius{scale}.png'))
+                plt.close()
+    print("all_step_histories keys:", all_step_histories.keys())
+    # Save and Plot
     df = pd.DataFrame(all_results)
-    print("\n\n=== FINAL RESULTS SUMMARY ===")
-    print(df[['Scale', 'Method', 'Avg_Return', 'Success_Rate', 'Adaptation_Improvement']])
+    print("\n=== FINAL RESULTS SUMMARY ===")
+    print(df[['Scale', 'Method', 'Avg_Return', 'Std_Return', 'Success_Rate']])
 
-    # Save to CSV
     df.to_csv(os.path.join(work_dir, 'tta_comparison_results.csv'), index=False)
-    print(f"Saved detailed results to {os.path.join(work_dir, 'tta_comparison_results.csv')}")
+    
+    # Ensure you have your plotting functions defined or imported
     plot_results(df, raw_curves, work_dir)
-    plot_average_cumulative_reward(all_step_histories, work_dir, scale=1.0)
-    plot_average_cumulative_reward(all_step_histories, work_dir, scale=max(scales))
+    # plot_average_cumulative_reward(all_step_histories, work_dir, scale=1.0)
+    # plot_average_cumulative_reward(all_step_histories, work_dir, scale=max(scales))
 
 if __name__ == '__main__':
     args = parse_args()

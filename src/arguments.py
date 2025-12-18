@@ -71,6 +71,7 @@ def parse_args():
 	parser.add_argument('--pad_checkpoint', default=None, type=str)
 	parser.add_argument('--pad_batch_size', default=32, type=int)
 	parser.add_argument('--pad_num_episodes', default=100, type=int)
+	parser.add_argument('--test_norm_lr', default=1e-3, type=float)
 
 	args = parser.parse_args()
 
